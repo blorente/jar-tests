@@ -4,6 +4,7 @@ import better.files.File.{root => r}
 import better.files.File.{home => home}
 import java.io.{File => JFile}
 import scala.xml.XML
+import scala.util.matching.Regex
 
 object Main {
 
@@ -11,15 +12,19 @@ object Main {
                                  dependencies: Seq[DependencyMetadata])
 
   def main(args: Array[String]) = {
-    for (path <- io.Source.stdin.getLines) {
+    val input: Iterator[String] =
+      if (args.size > 0) Iterator(args:_*)
+      else io.Source.stdin.getLines
+    for (path <- input) {
       println(s"Classpath: ${path}")
       val cp = r / path
       val dependencies = cp.lines
         .filter(_.endsWith(".jar"))
-        .map(r / _)
+        .map(File(_))
         .map(_.unzip())
         //.map(dir => {dir.listRecursively.map(println); dir})
         .map(_ / "META-INF" / "MANIFEST.MF")
+        //.map(f => {println(f.lines); f})
         .map(getJarManifestInfo)
         .map(getIvyInfo)
         .toSeq
@@ -32,20 +37,20 @@ object Main {
 
   case class JarManifestInfo(projname: String, vendor: String, version: String)
   def getJarManifestInfo(manifest: File): JarManifestInfo = {
-    JarManifestInfo(
-      manifest.lines
-        .find(_.startsWith("Specification-Title: "))
-        .get
-        .stripPrefix("Specification-Title: "),
-      manifest.lines
-        .find(_.startsWith("Specification-Vendor: "))
-        .get
-        .stripPrefix("Specification-Vendor: "),
-      manifest.lines
-        .find(_.startsWith("Specification-Version: "))
-        .get
-        .stripPrefix("Specification-Version: ")
+    def getField(fieldPart: String): String = {
+        manifest.lines
+          .find(_.startsWith(fieldPart))
+          .getOrElse("N/A")
+          .stripPrefix(fieldPart)  
+    }
+
+    val r = JarManifestInfo(
+      getField(""".*-Title"""),
+      getField(""".*-Vendor"""),
+      getField("""[^M].+-Version""")
     )
+    println(r)
+    r
   }
 
   def formatCSV[A](what: { def productIterator: Iterator[A] }): String =
@@ -60,7 +65,7 @@ object Main {
     val ivyFile = XML.loadFile(
       s"${home.path.toAbsolutePath.toString}/.ivy2/cache/${jarInfo.vendor}/${jarInfo.projname}/ivy-${jarInfo.version}.xml")
     (ivyFile \ "dependency").text
-    DependencyMetadata("stub", "stub","stub","stub","stub")
+    DependencyMetadata("stub", "stub", "stub", "stub", "stub")
   }
 }
 
