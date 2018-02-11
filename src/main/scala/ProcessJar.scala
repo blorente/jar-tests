@@ -6,106 +6,114 @@ import java.io.{File => JFile}
 import scala.xml.XML
 import scala.util.matching.Regex
 
+case class ProjectDependencies(project: String,
+                               dependencies: Seq[DependencyMetadata]) {
+  def csv =
+    dependencies.map(dep => s"$project, ${dep.productIterator.mkString(", ")}")
+}
+
+object ProjectDependencies {
+  val csvHeader = s"project, ${DependencyMetadata.csvHeader}"
+}
+
+case class DependencyMetadata(projname: String,
+                              vendor: String,
+                              version: String,
+                              language: String,
+                              scala_version: String)
+object DependencyMetadata {
+  val csvHeader = "depname, vendor, version, language, scala_version"
+}
+
+case class JarManifestInfo(projname: String, vendor: String, version: String)
+
 object Main {
-
-  case class ProjectDependencies(project: String,
-                                 dependencies: Seq[DependencyMetadata])
-
-  def main(args: Array[String]) = {
+  def main(args: Array[String]): Unit = {
     val input: Iterator[String] =
-      if (args.size > 0) Iterator(args:_*)
+      if (args.size > 0) Iterator(args: _*)
       else io.Source.stdin.getLines
-    for (path <- input) {
+    val deps: Iterator[ProjectDependencies] = for { path <- input } yield {
       println(s"Classpath: ${path}")
       val cp = r / path
       val dependencies = cp.lines
-        .filter(_.endsWith(".jar"))
-        .map(File(_))
-        .map(_.unzip())
-        //.map(dir => {dir.listRecursively.map(println); dir})
-        .map(_ / "META-INF" / "MANIFEST.MF")
-        //.map(f => {println(f.lines); f})
-        .map(getJarManifestInfo)
-        .map(getIvyInfo)
+        .filter(dep => dep.endsWith(".jar") && dep.contains("/.ivy2/"))
+        .map(_.split("""/\.ivy2/cache/""").tail.head)
+        .map(jarInfoFromIvyPath(_))
+        .map(f => { println(f); f })
+        //.map(getIvyInfo)
         .toSeq
-      ProjectDependencies(path, dependencies)
+      ProjectDependencies(path, dependencies.map(toMetadata))
     }
-
-    // Print to CSV
-    println(formatCSV(getIvyInfo(getJarManifestInfo(r))))
+    File("./hihi.csv")
+      .writeText(s"${ProjectDependencies.csvHeader}\n")
+      .appendLines(deps.flatMap(_.csv).toSeq: _*)
   }
 
-  case class JarManifestInfo(projname: String, vendor: String, version: String)
-  def getJarManifestInfo(manifest: File): JarManifestInfo = {
-    def getField(fieldPart: String): String = {
-        manifest.lines
-          .find(_.startsWith(fieldPart))
-          .getOrElse("N/A")
-          .stripPrefix(fieldPart)  
-    }
+  def toMetadata(jar: JarManifestInfo): DependencyMetadata = DependencyMetadata(
+    jar.projname,
+    jar.vendor,
+    jar.version,
+    "NA",
+    "NA"
+  )
 
-    val r = JarManifestInfo(
-      getField(""".*-Title"""),
-      getField(""".*-Vendor"""),
-      getField("""[^M].+-Version""")
+  // We rely on ivy paths:
+  //  <home>/.ivy2/cache/<vendor>/<projname>/jars/<jarfile>.jar
+  // Jarfile is for us described as:
+  //  \w[-\w]*-<version>.jar
+  def jarInfoFromIvyPath(path: String): JarManifestInfo = {
+    def getVersion(jarfile: String): String =
+      jarfile.split("-").last.stripSuffix(".jar")
+
+    val pathBuffer = path.split("/")
+    JarManifestInfo(
+      pathBuffer(1),
+      pathBuffer(0),
+      getVersion(pathBuffer.last)
     )
-    println(r)
-    r
   }
 
   def formatCSV[A](what: { def productIterator: Iterator[A] }): String =
     what.productIterator.mkString(", ")
 
-  case class DependencyMetadata(projname: String,
-                                vendor: String,
-                                version: String,
-                                language: String,
-                                scala_version: String)
   def getIvyInfo(jarInfo: JarManifestInfo): DependencyMetadata = {
+    def getLanguage(ivyFile: scala.xml.Node): String = {
+      (ivyFile \ "info" \ "@module").text match {
+        case "scala-library" => "Scala"
+        case _ =>
+          (ivyFile \ "dependency" \ "@name=scala-library").text match {
+            case "scala-library" => "Scala"
+            case _               => "Java"
+          }
+      }
+    }
+
+    def getScalaVersion(ivyFile: scala.xml.Node): String = {
+      (ivyFile \ "info" \ "@module").text match {
+        case "scala-library" => (ivyFile \ "info" \ "@revision").text
+        case _ =>
+          (ivyFile \ "dependency" \ "@name=scala-library").text match {
+            case "scala-library" =>
+              (ivyFile \ "dependency")
+                .filter(_.attribute("name") == "scala-library")
+                .head
+                .attribute("rev")
+                .get
+                .text
+            case _ => "NA"
+          }
+      }
+    }
+
     val ivyFile = XML.loadFile(
       s"${home.path.toAbsolutePath.toString}/.ivy2/cache/${jarInfo.vendor}/${jarInfo.projname}/ivy-${jarInfo.version}.xml")
     (ivyFile \ "dependency").text
-    DependencyMetadata("stub", "stub", "stub", "stub", "stub")
+    DependencyMetadata(
+      jarInfo.projname,
+      jarInfo.vendor,
+      jarInfo.version,
+      getLanguage(ivyFile),
+      getScalaVersion(ivyFile)
+    )
   }
 }
-
-/**
-case class CliConfig(root: String = "Nodir",
-                     classpath: String = "Nocp",
-                     outdir: String = "./tmp")
-object Cli {
-  def apply(args: Array[String]): Option[CliConfig] = {
-    val optParser = new scopt.OptionParser[CliConfig]("collector") {
-      head("PRL-PRG Classpath interpreter", "0.1")
-      arg[String]("<directory>")
-        .validate(
-          x =>
-            if (Files.exists(Paths.get(x)) && Files.isDirectory(Paths.get(x)))
-              success
-            else failure("Folder does not exist or is not a folder"))
-        .action((x, c) => c.copy(root = x))
-        .text("The directory where the project(s) is stored")
-      arg[String]("<stored classpath>")
-        .validate(
-          x =>
-            if (Files.exists(Paths.get(x)))
-              success
-            else failure("Classpath not found"))
-        .action((x, c) => c.copy(classpath = x))
-        .text("The stored classpath")
-      arg[String]("<output folder>")
-        .validate(
-          x =>
-            if (Files.exists(Paths.get(x)) && Files.isDirectory(Paths.get(x)))
-              success
-            else failure("Out folder does not exist or is not a directory")
-        )
-        .action((x, c) => c.copy(outdir = x))
-        .text("The desired place to output the files")
-    }
-
-    optParser.parse(args, CliConfig())
-  }
-
-}
-  */
