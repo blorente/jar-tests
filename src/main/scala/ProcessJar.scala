@@ -44,7 +44,7 @@ object Main {
         .toSeq
       ProjectDependencies(path, dependencies.map(toMetadata))
     }
-    File("./hihi.csv")
+    File("./dependency-report.csv")
       .writeText(s"${ProjectDependencies.csvHeader}\n")
       .appendLines(deps.flatMap(_.csv).toSeq: _*)
   }
